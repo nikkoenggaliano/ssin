@@ -1,0 +1,7 @@
+.build/
+build/
+.swiftpm/
+*.xcodeproj
+.DS_Store
+# local test captures in the repo root
+/*.png
