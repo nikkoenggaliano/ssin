@@ -122,6 +122,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(item)
         }
         menu.addItem(.separator())
+        let audioHeader = NSMenuItem(title: "Recording audio", action: nil, keyEquivalent: "")
+        audioHeader.isEnabled = false
+        menu.addItem(audioHeader)
+        for (title, symbol, on) in [("Microphone", "mic", AppSettings.shared.recordMicrophone),
+                                    ("Desktop Audio", "speaker.wave.2", AppSettings.shared.recordSystemAudio)] {
+            let item = NSMenuItem(title: title, action: #selector(toggleAudioSource(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = title
+            item.state = on ? .on : .off
+            item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+            menu.addItem(item)
+        }
+
+        menu.addItem(.separator())
         let folder = NSMenuItem(title: "Open Screenshots Folder", action: #selector(openFolder(_:)), keyEquivalent: "")
         folder.target = self
         folder.image = NSImage(systemSymbolName: "folder", accessibilityDescription: nil)
@@ -142,6 +156,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func stopRecording(_ sender: Any?) {
         Task { await ScreenRecorder.shared.stop() }
+    }
+
+    @objc private func toggleAudioSource(_ sender: NSMenuItem) {
+        let settings = AppSettings.shared
+        if sender.representedObject as? String == "Microphone" {
+            settings.recordMicrophone.toggle()
+            sender.state = settings.recordMicrophone ? .on : .off
+        } else {
+            settings.recordSystemAudio.toggle()
+            sender.state = settings.recordSystemAudio ? .on : .off
+        }
     }
 
     @objc private func openFolder(_ sender: Any?) {

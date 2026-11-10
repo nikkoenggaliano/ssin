@@ -57,6 +57,11 @@ final class SelectionOverlayController {
         for view in views { view.pointerMoved(toGlobal: global) }
     }
 
+    /// An audio toggle changed: every display's overlay shows the same state.
+    func optionsChanged() {
+        for view in views { view.refreshOptions() }
+    }
+
     func finish(_ result: SelectionResult?) {
         guard let completion else { return }
         self.completion = nil
@@ -103,11 +108,15 @@ final class OverlayView: NSView {
     private let sizeLabel = PillTextLayer()
     private let hintLabel = PillTextLayer()
     private let loupe = LoupeLayer()
+    private let optionsBar = RecordOptionsLayer()
 
     private var mouse: CGPoint?
     private var dragStart: CGPoint?
     private var selection: CGRect?
     private var hovered: (info: WindowInfo, rect: CGRect)?
+    private var hoveredOption: RecordOptionsLayer.Option?
+    /// Set while a click lands on an audio toggle, so it never starts a selection.
+    private var hitOption = false
 
     init(screen: NSScreen, shot: DisplayShot?, windows: [WindowInfo], purpose: SelectionPurpose) {
         self.screen = screen
@@ -144,7 +153,9 @@ final class OverlayView: NSView {
         crosshairLayer.lineDashPattern = [5, 4]
         crosshairLayer.fillColor = nil
         hintLabel.setText(purpose.hint, font: .systemFont(ofSize: 13, weight: .medium))
-        for sub in [dimLayer, outlineLayer, crosshairLayer, sizeLabel, hintLabel, loupe] as [CALayer] {
+        optionsBar.isHidden = true
+        if purpose == .record { optionsBar.configure(scale: scale) }
+        for sub in [dimLayer, outlineLayer, crosshairLayer, sizeLabel, hintLabel, optionsBar, loupe] as [CALayer] {
             sub.contentsScale = scale
             root.addSublayer(sub)
         }
@@ -166,7 +177,9 @@ final class OverlayView: NSView {
     }
 
     override func resetCursorRects() { addCursorRect(bounds, cursor: .crosshair) }
-    override func cursorUpdate(with event: NSEvent) { NSCursor.crosshair.set() }
+    override func cursorUpdate(with event: NSEvent) { pointerCursor.set() }
+
+    private var pointerCursor: NSCursor { hoveredOption == nil ? .crosshair : .arrow }
 
     override func mouseEntered(with event: NSEvent) {
         window?.makeKey()
@@ -175,25 +188,33 @@ final class OverlayView: NSView {
 
     override func mouseMoved(with event: NSEvent) {
         controller?.pointerMoved(to: NSEvent.mouseLocation)
-        NSCursor.crosshair.set()
+        pointerCursor.set()
     }
 
     func pointerMoved(toGlobal global: CGPoint) {
         let local = CGPoint(x: global.x - screen.frame.minX, y: global.y - screen.frame.minY)
         mouse = bounds.contains(local) ? local : nil
         if dragStart == nil {
-            hovered = mouse.flatMap { m in windowRects.first { $0.rect.contains(m) } }
+            hoveredOption = mouse.flatMap { option(at: $0) }
+            hovered = hoveredOption != nil ? nil : mouse.flatMap { m in windowRects.first { $0.rect.contains(m) } }
         }
         refresh()
     }
 
     override func mouseDown(with event: NSEvent) {
-        dragStart = clamp(convert(event.locationInWindow, from: nil))
+        let point = clamp(convert(event.locationInWindow, from: nil))
+        if let option = option(at: point) {
+            hitOption = true
+            toggle(option)
+            return
+        }
+        hitOption = false
+        dragStart = point
         selection = nil
     }
 
     override func mouseDragged(with event: NSEvent) {
-        guard let start = dragStart else { return }
+        guard !hitOption, let start = dragStart else { return }
         var p = clamp(convert(event.locationInWindow, from: nil))
         mouse = p
         if selection == nil && p.distance(to: start) < 3 { return }
@@ -205,6 +226,10 @@ final class OverlayView: NSView {
 
     override func mouseUp(with event: NSEvent) {
         defer { dragStart = nil }
+        if hitOption {
+            hitOption = false
+            return
+        }
         if let sel = selection, sel.width >= 2, sel.height >= 2 {
             controller?.finish(SelectionResult(screen: screen, rect: snapped(sel), window: nil))
         } else if let hovered {
@@ -217,12 +242,60 @@ final class OverlayView: NSView {
     override func rightMouseDown(with event: NSEvent) { controller?.finish(nil) }
 
     override func keyDown(with event: NSEvent) {
-        if event.keyCode == 53 { controller?.finish(nil) }
+        if event.keyCode == 53 {
+            controller?.finish(nil)
+            return
+        }
+        guard purpose == .record, event.modifierFlags.intersection([.command, .option, .control]).isEmpty else { return }
+        switch event.charactersIgnoringModifiers?.lowercased() {
+        case "m": toggle(.microphone)
+        case "d": toggle(.desktopAudio)
+        default: break
+        }
+    }
+
+    /// Flips an audio source for the recording that is about to start (shared by every overlay on screen).
+    private func toggle(_ option: RecordOptionsLayer.Option) {
+        let settings = AppSettings.shared
+        switch option {
+        case .microphone: settings.recordMicrophone.toggle()
+        case .desktopAudio: settings.recordSystemAudio.toggle()
+        }
+        refresh()
+        controller?.optionsChanged()
+    }
+
+    func refreshOptions() { refresh() }
+
+    /// The audio toggle under a point in view coordinates, if any.
+    private func option(at point: CGPoint) -> RecordOptionsLayer.Option? {
+        guard purpose == .record, dragStart == nil, selection == nil else { return nil }
+        let frame = optionsBar.frame
+        guard frame.insetBy(dx: -4, dy: -4).contains(point) else { return nil }
+        return optionsBar.option(at: CGPoint(x: point.x - frame.minX, y: point.y - frame.minY))
     }
 
     override func cancelOperation(_ sender: Any?) { controller?.finish(nil) }
 
     #if DEBUG
+    /// Center of an audio toggle in view coordinates (nil when the bar isn't on screen).
+    func debugOptionCenter(_ option: RecordOptionsLayer.Option) -> CGPoint? {
+        guard purpose == .record, let local = optionsBar.center(of: option) else { return nil }
+        return CGPoint(x: optionsBar.frame.minX + local.x, y: optionsBar.frame.minY + local.y)
+    }
+
+    var debugSelectionArmed: Bool { dragStart != nil }
+
+    func debugMouseDown(at point: CGPoint) {
+        if let option = option(at: point) {
+            hitOption = true
+            toggle(option)
+            return
+        }
+        hitOption = false
+        dragStart = point
+    }
+
     func dragStartForDebug(_ p: CGPoint) { dragStart = p }
     func selectionForDebug(_ r: CGRect) {
         selection = r
@@ -283,6 +356,17 @@ final class OverlayView: NSView {
 
         hintLabel.isHidden = mouse == nil || dragStart != nil
         hintLabel.position = CGPoint(x: bounds.midX, y: bounds.maxY - 64)
+        updateOptionsBar()
+    }
+
+    private func updateOptionsBar() {
+        guard purpose == .record else { return }
+        let settings = AppSettings.shared
+        optionsBar.update(microphone: settings.recordMicrophone, desktopAudio: settings.recordSystemAudio, hovered: hoveredOption)
+        optionsBar.isHidden = mouse == nil || dragStart != nil
+        let size = optionsBar.bounds.size
+        let top = bounds.maxY - 64 - hintLabel.bounds.height / 2 - 10
+        optionsBar.frame = CGRect(x: (bounds.width - size.width) / 2, y: top - size.height, width: size.width, height: size.height)
     }
 
     private func updateSizeLabel() {
@@ -354,6 +438,123 @@ final class PillTextLayer: CALayer {
         bounds = CGRect(x: 0, y: 0, width: w + 18, height: h + 9)
         textLayer.string = attributed
         textLayer.frame = CGRect(x: 9, y: 4.5, width: w, height: h)
+    }
+}
+
+/// The microphone / desktop-audio toggles shown while picking an area to record.
+/// Click them, or press M / D; the choice is remembered in Settings → Recording.
+final class RecordOptionsLayer: CALayer {
+    enum Option: CaseIterable {
+        case microphone, desktopAudio
+
+        var onSymbol: String { self == .microphone ? "mic.fill" : "speaker.wave.2.fill" }
+        var offSymbol: String { self == .microphone ? "mic.slash.fill" : "speaker.slash.fill" }
+        var title: String { self == .microphone ? "Microphone" : "Desktop audio" }
+        var key: String { self == .microphone ? "M" : "D" }
+    }
+
+    private static let spacing: CGFloat = 8
+    private var chips: [(option: Option, chip: OptionChipLayer)] = []
+
+    func configure(scale: CGFloat) {
+        contentsScale = scale
+        for option in Option.allCases {
+            let chip = OptionChipLayer()
+            chip.contentsScale = scale
+            chip.configure(option: option, scale: scale)
+            chips.append((option, chip))
+            addSublayer(chip)
+        }
+        update(microphone: false, desktopAudio: false, hovered: nil)
+    }
+
+    func update(microphone: Bool, desktopAudio: Bool, hovered: Option?) {
+        for (option, chip) in chips {
+            chip.update(on: option == .microphone ? microphone : desktopAudio, hovered: option == hovered)
+        }
+        var x: CGFloat = 0, height: CGFloat = 0
+        for (_, chip) in chips {
+            chip.frame = CGRect(origin: CGPoint(x: x, y: 0), size: chip.bounds.size)
+            x += chip.bounds.width + Self.spacing
+            height = max(height, chip.bounds.height)
+        }
+        bounds = CGRect(x: 0, y: 0, width: max(0, x - Self.spacing), height: height)
+    }
+
+    /// `point` is in this layer's own coordinate space.
+    func option(at point: CGPoint) -> Option? {
+        chips.first { $0.chip.frame.insetBy(dx: -2, dy: -4).contains(point) }?.option
+    }
+
+    /// Middle of a chip, in this layer's own coordinate space.
+    func center(of option: Option) -> CGPoint? {
+        chips.first { $0.option == option }?.chip.frame.center
+    }
+}
+
+/// One toggle pill: icon, label and its key hint.
+private final class OptionChipLayer: CALayer {
+    private let iconLayer = CALayer()
+    private let textLayer = CATextLayer()
+    private var onImage: CGImage?
+    private var offImage: CGImage?
+    private var iconSize = CGSize(width: 14, height: 14)
+    private var title = ""
+    private var key = ""
+
+    override init() {
+        super.init()
+        cornerRadius = 9
+        borderWidth = 1
+        iconLayer.contentsGravity = .resizeAspect
+        textLayer.alignmentMode = .left
+        addSublayer(iconLayer)
+        addSublayer(textLayer)
+    }
+
+    override init(layer: Any) { super.init(layer: layer) }
+    required init?(coder: NSCoder) { fatalError() }
+
+    override var contentsScale: CGFloat {
+        didSet {
+            iconLayer.contentsScale = contentsScale
+            textLayer.contentsScale = contentsScale
+        }
+    }
+
+    func configure(option: RecordOptionsLayer.Option, scale: CGFloat) {
+        title = option.title
+        key = option.key
+        onImage = SymbolImage.white(option.onSymbol, pointSize: 12, scale: scale)
+        offImage = SymbolImage.white(option.offSymbol, pointSize: 12, scale: scale)
+        if let onImage {
+            iconSize = CGSize(width: CGFloat(onImage.width) / scale, height: CGFloat(onImage.height) / scale)
+        }
+    }
+
+    func update(on: Bool, hovered: Bool) {
+        iconLayer.contents = on ? onImage : offImage
+        iconLayer.opacity = on ? 1 : 0.6
+        let text = NSMutableAttributedString(string: title, attributes: [
+            .font: NSFont.systemFont(ofSize: 12, weight: .semibold),
+            .foregroundColor: on ? NSColor.white : NSColor.white.withAlphaComponent(0.75),
+        ])
+        text.append(NSAttributedString(string: "  \(key)", attributes: [
+            .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .semibold),
+            .foregroundColor: NSColor.white.withAlphaComponent(on ? 0.7 : 0.45),
+        ]))
+        let size = text.size()
+        let tw = ceil(size.width), th = ceil(size.height)
+        let height: CGFloat = 30, left: CGFloat = 11, gap: CGFloat = 7, right: CGFloat = 12
+        bounds = CGRect(x: 0, y: 0, width: left + iconSize.width + gap + tw + right, height: height)
+        iconLayer.frame = CGRect(x: left, y: ((height - iconSize.height) / 2).rounded(),
+                                 width: iconSize.width, height: iconSize.height)
+        textLayer.string = text
+        textLayer.frame = CGRect(x: left + iconSize.width + gap, y: ((height - th) / 2).rounded(), width: tw, height: th)
+        backgroundColor = on
+            ? NSColor.controlAccentColor.withAlphaComponent(hovered ? 1 : 0.88).cgColor
+            : NSColor(white: 0.08, alpha: hovered ? 0.95 : 0.82).cgColor
+        borderColor = NSColor.white.withAlphaComponent(on ? 0.3 : (hovered ? 0.4 : 0.18)).cgColor
     }
 }
 
@@ -461,10 +662,32 @@ final class LoupeLayer: CALayer {
 
 #if DEBUG
 extension SelectionOverlayController {
+    /// Headless check: clicking each chip flips its setting and never starts a selection drag.
+    static func debugToggleCheck() -> String {
+        guard let screen = NSScreen.main else { return "no screen" }
+        let view = OverlayView(screen: screen, shot: nil, windows: [], purpose: .record)
+        let settings = AppSettings.shared
+        view.pointerMoved(toGlobal: CGPoint(x: screen.frame.midX, y: screen.frame.midY))
+        var results: [String] = []
+        for option in RecordOptionsLayer.Option.allCases {
+            let name = option == .microphone ? "mic" : "desktop"
+            func value() -> Bool { option == .microphone ? settings.recordMicrophone : settings.recordSystemAudio }
+            let before = value()
+            guard view.debugClickOption(option) else {
+                results.append("\(name) NOT HITTABLE")
+                continue
+            }
+            results.append("\(name) \(value() != before ? "ok" : "FAILED")")
+        }
+        results.append(view.debugSelectionArmed ? "drag leak FAILED" : "no drag leak ok")
+        return results.joined(separator: ", ")
+    }
+
     /// Renders an overlay offscreen with a simulated pointer/selection (no real screen involved).
-    static func debugRender(screen: NSScreen, frozen: CGImage, mouse: CGPoint, dragTo: CGPoint?, windows: [WindowInfo]) -> CGImage? {
+    static func debugRender(screen: NSScreen, frozen: CGImage, mouse: CGPoint, dragTo: CGPoint?, windows: [WindowInfo],
+                            purpose: SelectionPurpose = .screenshot) -> CGImage? {
         let shot = DisplayShot(displayID: screen.displayID ?? 0, image: frozen, scale: screen.backingScaleFactor)
-        let view = OverlayView(screen: screen, shot: shot, windows: windows, purpose: .screenshot)
+        let view = OverlayView(screen: screen, shot: shot, windows: windows, purpose: purpose)
         let global = CGPoint(x: mouse.x + screen.frame.minX, y: mouse.y + screen.frame.minY)
         view.pointerMoved(toGlobal: global)
         if let dragTo { view.debugDrag(from: mouse, to: dragTo) }
@@ -480,6 +703,15 @@ extension SelectionOverlayController {
 }
 
 extension OverlayView {
+    /// Clicks an audio toggle on the recording overlay, as the real mouse would.
+    @discardableResult
+    func debugClickOption(_ option: RecordOptionsLayer.Option) -> Bool {
+        let point = debugOptionCenter(option)
+        guard let point else { return false }
+        debugMouseDown(at: point)
+        return true
+    }
+
     func debugDrag(from start: CGPoint, to end: CGPoint) {
         dragStartForDebug(start)
         selectionForDebug(CGRect(p1: start, p2: end))

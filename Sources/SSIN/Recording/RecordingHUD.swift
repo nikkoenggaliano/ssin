@@ -9,9 +9,11 @@ final class RecordingHUD {
     private let model = RecordingHUDModel()
     private var timer: Timer?
 
-    func show(around rect: CGRect, on screen: NSScreen, showBorder: Bool, onStop: @escaping () -> Void, onDiscard: @escaping () -> Void) {
+    func show(around rect: CGRect, on screen: NSScreen, showBorder: Bool, audio: RecordingAudio,
+              onStop: @escaping () -> Void, onDiscard: @escaping () -> Void) {
         hide()
         model.elapsed = 0
+        model.audio = audio
         model.onStop = onStop
         model.onDiscard = onDiscard
 
@@ -59,6 +61,10 @@ final class RecordingHUD {
         }
     }
 
+    #if DEBUG
+    var debugControlsView: NSView? { controls?.contentView }
+    #endif
+
     func hide() {
         timer?.invalidate()
         timer = nil
@@ -72,6 +78,7 @@ final class RecordingHUD {
 @MainActor
 final class RecordingHUDModel: ObservableObject {
     @Published var elapsed: TimeInterval = 0
+    @Published var audio = RecordingAudio()
     var onStop: () -> Void = {}
     var onDiscard: () -> Void = {}
 }
@@ -102,6 +109,10 @@ private struct RecordingControlsView: View {
                 .font(.system(size: 13, weight: .semibold, design: .rounded))
                 .monospacedDigit()
                 .frame(minWidth: 44, alignment: .leading)
+            AudioLight(name: "Microphone", onSymbol: "mic.fill", offSymbol: "mic.slash.fill", on: model.audio.microphone)
+            AudioLight(name: "Desktop audio", onSymbol: "speaker.wave.2.fill", offSymbol: "speaker.slash.fill",
+                       on: model.audio.system)
+            Divider().frame(height: 18).overlay(Color.white.opacity(0.15))
             Button(action: model.onStop) {
                 Label("Stop", systemImage: "stop.fill")
                     .font(.system(size: 12, weight: .semibold))
@@ -134,5 +145,23 @@ private struct RecordingControlsView: View {
     static func format(_ t: TimeInterval) -> String {
         let s = Int(t)
         return s >= 3600 ? String(format: "%d:%02d:%02d", s / 3600, (s / 60) % 60, s % 60) : String(format: "%d:%02d", s / 60, s % 60)
+    }
+}
+
+/// Shows whether an audio source is being captured. The sources are fixed once the recording starts,
+/// so this is a readout, not a switch: pick them on the recording overlay (M / D) before you begin.
+private struct AudioLight: View {
+    let name: String
+    let onSymbol: String
+    let offSymbol: String
+    let on: Bool
+
+    var body: some View {
+        Image(systemName: on ? onSymbol : offSymbol)
+            .font(.system(size: 11.5, weight: .semibold))
+            .foregroundStyle(on ? Color.white : Color.white.opacity(0.3))
+            .frame(width: 26, height: 26)
+            .background(Circle().fill(on ? Color.red.opacity(0.7) : Color.white.opacity(0.06)))
+            .help(on ? "\(name) is being recorded" : "\(name) is off for this recording")
     }
 }

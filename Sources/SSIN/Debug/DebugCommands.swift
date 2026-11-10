@@ -22,7 +22,10 @@ enum DebugCommands {
             overlaySnapshot(input: args[2], outDir: args[3])
             return true
         case "--record-test" where args.count >= 3:
-            recordTest(outDir: args[2])
+            recordTest(outDir: args[2], audio: args.count >= 4 && args[3] == "audio")
+            return true
+        case "--hud-snapshot" where args.count >= 3:
+            hudSnapshot(output: args[2])
             return true
         case "--settings-snapshot" where args.count >= 3:
             settingsSnapshot(output: args[2])
@@ -138,19 +141,36 @@ enum DebugCommands {
                                                              dragTo: CGPoint(x: size.width * 0.55, y: size.height * 0.35), windows: []) {
             write(drag, to: "\(outDir)/overlay-drag.png")
         }
+        // The recording overlay, with its microphone / desktop-audio toggles.
+        let settings = AppSettings.shared
+        let savedMic = settings.recordMicrophone, savedSystem = settings.recordSystemAudio
+        settings.recordMicrophone = true
+        settings.recordSystemAudio = false
+        if let record = SelectionOverlayController.debugRender(screen: screen, frozen: frozen,
+                                                              mouse: CGPoint(x: size.width * 0.5, y: size.height * 0.5),
+                                                              dragTo: nil, windows: [], purpose: .record) {
+            write(record, to: "\(outDir)/overlay-record.png")
+        }
+        print("audio toggles:", SelectionOverlayController.debugToggleCheck())
+        settings.recordMicrophone = savedMic
+        settings.recordSystemAudio = savedSystem
     }
 
     /// Records a small area for 2 seconds through the real recorder, then prints the file's video properties.
-    private static func recordTest(outDir: String) {
+    /// With `audio`, desktop audio is captured too and the file is checked for a real audio track.
+    private static func recordTest(outDir: String, audio: Bool = false) {
         _ = NSApplication.shared
         NSApp.setActivationPolicy(.accessory)
         let settings = AppSettings.shared
         let savedFolder = settings.saveFolder, savedPreview = settings.showRecordingPreview
+        let savedSystemAudio = settings.recordSystemAudio
         settings.saveFolder = URL(fileURLWithPath: outDir, isDirectory: true)
         settings.showRecordingPreview = false
+        if audio { settings.recordSystemAudio = true }
         func finish(_ code: Int32) -> Never {
             settings.saveFolder = savedFolder
             settings.showRecordingPreview = savedPreview
+            settings.recordSystemAudio = savedSystemAudio
             exit(code)
         }
         Task { @MainActor in
@@ -158,6 +178,7 @@ enum DebugCommands {
             let rect = CGRect(x: 100, y: 100, width: 401, height: 301)
             await ScreenRecorder.shared.start(screen: screen, rect: rect)
             print("recording:", ScreenRecorder.shared.isRecording)
+            if audio { print("sources:", ScreenRecorder.shared.audio) }
             try? await Task.sleep(for: .seconds(2))
             await ScreenRecorder.shared.stop()
             let files = (try? FileManager.default.contentsOfDirectory(atPath: outDir).filter { $0.hasSuffix(".mp4") }) ?? []
@@ -175,8 +196,41 @@ enum DebugCommands {
                 print(String(format: "file: %@  %.0fx%.0f  codec %@  %.1f fps  %.2fs  %lld bytes", name, size.width, size.height, codec, fps, duration,
                              (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int64) ?? 0))
             }
+            let audioTracks = (try? await asset.loadTracks(withMediaType: .audio)) ?? []
+            print("audio tracks:", audioTracks.count)
+            for track in audioTracks {
+                let formats = (try? await track.load(.formatDescriptions)) ?? []
+                let basic = formats.first.flatMap { CMAudioFormatDescriptionGetStreamBasicDescription($0)?.pointee }
+                let range = (try? await track.load(.timeRange)) ?? .zero
+                print(String(format: "  track %d: %.0f Hz, %u ch, %.2fs", track.trackID, basic?.mSampleRate ?? 0,
+                             basic?.mChannelsPerFrame ?? 0, CMTimeGetSeconds(range.duration)))
+            }
+            if audio && audioTracks.isEmpty { print("EXPECTED AN AUDIO TRACK"); try? FileManager.default.removeItem(at: url); finish(1) }
             try? FileManager.default.removeItem(at: url)
             finish(0)
+        }
+        NSApp.run()
+    }
+
+    /// Renders the recording HUD (timer, audio lights, stop/discard) without recording anything.
+    private static func hudSnapshot(output: String) {
+        _ = NSApplication.shared
+        NSApp.setActivationPolicy(.accessory)
+        guard let screen = NSScreen.main else { exit(1) }
+        let hud = RecordingHUD()
+        hud.show(around: CGRect(x: screen.frame.midX - 300, y: screen.frame.midY - 200, width: 600, height: 400),
+                 on: screen, showBorder: true, audio: RecordingAudio(microphone: true, system: false),
+                 onStop: {}, onDiscard: {})
+        hud.startTimer(from: Date().addingTimeInterval(-83))
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+            guard let view = hud.debugControlsView,
+                  let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds)
+            else { print("no hud view"); exit(1) }
+            view.cacheDisplay(in: view.bounds, to: rep)
+            try! rep.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: output))
+            print("wrote \(output) \(rep.pixelsWide)x\(rep.pixelsHigh)")
+            hud.hide()
+            exit(0)
         }
         NSApp.run()
     }

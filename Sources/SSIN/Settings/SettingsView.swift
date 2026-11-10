@@ -209,8 +209,11 @@ private struct RecordingSettings: View {
                 Toggle("Highlight clicks", isOn: $settings.recordClicks)
             }
             Section("Audio") {
-                Toggle("Record system audio", isOn: $settings.recordSystemAudio)
+                Toggle("Record desktop audio", isOn: $settings.recordSystemAudio)
                 Toggle("Record microphone", isOn: $settings.recordMicrophone)
+                Text("Both can also be switched right before you record: click them on the recording overlay, or press M and D. They can't change once a recording is running.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             Section("When finished") {
                 Toggle("Open a preview to trim, copy or share", isOn: $settings.showRecordingPreview)

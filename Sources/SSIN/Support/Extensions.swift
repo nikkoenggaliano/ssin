@@ -105,6 +105,27 @@ extension CGImage {
     }
 }
 
+enum SymbolImage {
+    /// Renders an SF Symbol into a white bitmap at `scale` pixels per point, ready for `CALayer.contents`.
+    static func white(_ name: String, pointSize: CGFloat, weight: NSFont.Weight = .semibold, scale: CGFloat) -> CGImage? {
+        let config = NSImage.SymbolConfiguration(pointSize: pointSize, weight: weight)
+        guard let base = NSImage(systemSymbolName: name, accessibilityDescription: nil)?.withSymbolConfiguration(config)
+        else { return nil }
+        let w = max(1, Int((base.size.width * scale).rounded())), h = max(1, Int((base.size.height * scale).rounded()))
+        guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0, space: sRGBColorSpace,
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        else { return nil }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: false)
+        let rect = NSRect(x: 0, y: 0, width: CGFloat(w), height: CGFloat(h))
+        base.draw(in: rect)
+        NSColor.white.set()
+        rect.fill(using: .sourceAtop)
+        NSGraphicsContext.restoreGraphicsState()
+        return ctx.makeImage()
+    }
+}
+
 extension NSImage {
     convenience init(cgImage: CGImage, scale: CGFloat) {
         self.init(cgImage: cgImage, size: NSSize(width: CGFloat(cgImage.width) / scale, height: CGFloat(cgImage.height) / scale))

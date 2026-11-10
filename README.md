@@ -19,7 +19,7 @@
 - **Edit.** Arrows, shapes, text, numbered steps, pen, highlighter, blur or pixelate, spotlight, crop, and one-click gradient backgrounds.
 - **Share.** Copy, save, drag into any app, or pin the image on top of everything. Copy and Save close the editor; hold ⌥ to keep it open.
 - **OCR.** Copy the text from any part of the screen.
-- **Record.** Save the screen as MP4 (H.264 or HEVC, 30 or 60 fps), with click highlights, system audio and your mic, then trim it right away.
+- **Record.** Save the screen as MP4 (H.264 or HEVC, 30 or 60 fps), with click highlights, then trim it right away. Turn the microphone and desktop audio on or off right on the recording overlay (click them, or press <kbd>M</kbd> / <kbd>D</kbd>); the recording bar shows which ones are live.
 - **Stays out of the way.** SSIN lives in the menu bar, starts at login, and every shortcut can be changed.
 
 | Shortcut | Action |

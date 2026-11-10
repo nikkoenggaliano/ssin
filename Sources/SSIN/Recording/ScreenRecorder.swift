@@ -2,6 +2,13 @@ import AppKit
 import AVFoundation
 import ScreenCaptureKit
 
+/// Which audio sources the current recording captures. Fixed when the recording starts: ScreenCaptureKit closes
+/// the file's audio tracks on a mid-stream configuration change, so the sources are chosen before the first frame.
+struct RecordingAudio {
+    var microphone = false
+    var system = false
+}
+
 /// Records an area of one display straight to MP4 with ScreenCaptureKit (hardware encoder, native resolution).
 @MainActor
 final class ScreenRecorder: NSObject {
@@ -9,6 +16,7 @@ final class ScreenRecorder: NSObject {
 
     private(set) var isRecording = false
     private(set) var startedAt: Date?
+    private(set) var audio = RecordingAudio()
     var onStateChange: (() -> Void)?
 
     private var stream: SCStream?
@@ -30,10 +38,13 @@ final class ScreenRecorder: NSObject {
             }
         }
 
+        let systemAudio = settings.recordSystemAudio
+        audio = RecordingAudio(microphone: microphone, system: systemAudio)
+
         let globalRect = rect.offsetBy(dx: screen.frame.minX, dy: screen.frame.minY)
         let isFullScreen = rect.width >= screen.frame.width - 1 && rect.height >= screen.frame.height - 1
         // Show the HUD first: the app must own a window to be excluded from the capture below.
-        hud.show(around: globalRect, on: screen, showBorder: !isFullScreen,
+        hud.show(around: globalRect, on: screen, showBorder: !isFullScreen, audio: audio,
                  onStop: { [weak self] in Task { await self?.stop() } },
                  onDiscard: { [weak self] in Task { await self?.stop(discard: true) } })
 
@@ -65,7 +76,7 @@ final class ScreenRecorder: NSObject {
             config.queueDepth = 8
             config.showsCursor = settings.recordCursor
             config.showMouseClicks = settings.recordClicks
-            config.capturesAudio = settings.recordSystemAudio
+            config.capturesAudio = systemAudio
             config.excludesCurrentProcessAudio = true
             config.captureMicrophone = microphone
             config.captureResolution = .best
@@ -101,9 +112,11 @@ final class ScreenRecorder: NSObject {
             hud.hide()
             self.stream = nil
             self.output = nil
+            audio = RecordingAudio()
             Permissions.report(error)
         }
     }
+
 
     func stop(discard: Bool = false) async {
         guard isRecording, let stream, let output else { return }
@@ -125,6 +138,7 @@ final class ScreenRecorder: NSObject {
         self.stream = nil
         self.output = nil
         startedAt = nil
+        audio = RecordingAudio()
         onStateChange?()
 
         guard let url = fileURL else { return }
